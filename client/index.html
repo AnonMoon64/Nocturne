@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nocturne</title>
+    <script type="module" src="/src/main.js" defer></script>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+
+  <body>
+    <div id="app">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <header class="sidebar-header">Nocturne</header>
+        
+        <!-- Engine Control -->
+        <div class="engine-control" style="padding: 15px; border-bottom: 1px solid #222;">
+          <div style="font-size: 0.7rem; color: #888; margin-bottom: 5px; text-transform: uppercase;">Inference API</div>
+          <input type="text" id="api-url" placeholder="127.0.0.1:8080" style="width: 100%; background: #111; color: #fff; border: 1px solid #333; padding: 5px; margin-bottom: 10px; font-size: 0.8rem; box-sizing: border-box;">
+          <button id="connect-btn" style="width: 100%; height: 30px; font-size: 0.8rem; background: #222; border: 1px solid #444;">Connect</button>
+          <div id="engine-status" style="font-size: 0.6rem; margin-top: 5px; color: #f44;">Status: Disconnected</div>
+        </div>
+
+        <div class="char-list" id="char-list">
+          <!-- Characters will be injected here -->
+          <div class="char-item active">
+            <div class="char-avatar"></div>
+            <div class="char-info">
+              <span class="char-name">System</span>
+            </div>
+          </div>
+        </div>
+        <div class="sidebar-footer" style="padding: 10px; border-top: 1px solid #222; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+            <button id="import-btn" style="font-size: 0.7rem;">Import Card</button>
+            <button id="user-btn" style="font-size: 0.7rem;">User Profile</button>
+          </div>
+          <button id="create-group-btn" style="font-size: 0.7rem; background: #1a3a1a; border: 1px solid #2a5a2a; display: none;">Create New Group</button>
+          <button id="settings-btn" style="font-size: 0.7rem; background: #222; border: 1px solid #333;">Nocturne Settings</button>
+        </div>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="main-content">
+        <header class="chat-header">
+          <span id="current-char-name">System</span>
+          <div style="flex: 1;"></div>
+          <button id="group-mode-toggle" class="header-btn" title="Toggle Group Mode">Group Mode: OFF</button>
+          <button id="group-auto-toggle" class="header-btn" title="Toggle Auto-Generation" style="display: none;">AUTO: OFF</button>
+          <button id="world-state-toggle" class="header-btn" title="Toggle World State">World State</button>
+        </header>
+
+        <section class="chat-history" id="chat-history">
+          <div class="message bot">
+            <div class="message-name">System</div>
+            <div class="message-content">Welcome to Nocturne. Connect your inference engine API to begin.</div>
+          </div>
+        </section>
+
+        <footer class="input-area">
+          <div class="input-container">
+            <textarea id="chat-input" placeholder="Type a message..."></textarea>
+            <button id="send-btn">Send</button>
+          </div>
+        </footer>
+      </main>
+
+      <!-- Editor Panel -->
+      <aside class="editor-panel" id="editor-panel">
+        <header class="sidebar-header">Character Editor</header>
+        <div class="editor-content">
+          <label>Name</label>
+          <input type="text" id="edit-name" placeholder="Character Name">
+          
+          <label>Description / Personality</label>
+          <textarea id="edit-description" style="height: 150px;" placeholder="personality, appearance, etc."></textarea>
+
+          <label>Personality Tags</label>
+          <input type="text" id="edit-personality" placeholder="e.g. cold, calculating, arrogant">
+          
+          <label>Scenario</label>
+          <textarea id="edit-scenario" style="height: 60px;" placeholder="context of the chat"></textarea>
+          
+          <label>First Message / Greeting</label>
+          <textarea id="edit-first-mes" style="height: 80px;" placeholder="Opening greeting"></textarea>
+
+          <label>Example Dialogue</label>
+          <textarea id="edit-mes-example" style="height: 150px;" placeholder="<START>
+User: Hello
+Char: Hi there!"></textarea>
+          
+          <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button id="save-char-btn" style="flex: 1; background: #333; border: 1px solid #444;">Save Changes</button>
+            <button id="close-editor-btn" style="background: #222; border: 1px solid #333;">Close</button>
+          </div>
+        </div>
+      </aside>
+      
+      <!-- Settings Panel -->
+      <aside class="editor-panel settings-overlay" id="settings-panel">
+        <header class="sidebar-header">Nocturne Settings</header>
+        <div class="editor-content">
+          <label>User Profile</label>
+          <input type="text" id="setting-user-name" placeholder="Your Name">
+          
+          <label>Global System Prompt</label>
+          <textarea id="setting-system-prompt" style="height: 180px;" placeholder="Global instructions for the AI (e.g. You are a roleplay engine. Stay in character...)"></textarea>
+          
+          <div style="margin-top: 20px;">
+            <button id="save-settings-btn" style="width: 100%; background: #333; border: 1px solid #444; height: 35px; margin-bottom: 10px;">Save Settings</button>
+            <button id="close-settings-btn" style="width: 100%; background: #222; border: 1px solid #333; height: 30px;">Close</button>
+          </div>
+        </div>
+      </aside>
+
+      <!-- World State Sidebar -->
+      <aside class="world-state-sidebar" id="world-state-sidebar">
+        <header class="sidebar-header">World State</header>
+        <div class="editor-content">
+          <div class="state-section">
+            <label>Active Plot Points</label>
+            <ul id="plot-points-list" class="state-list"></ul>
+          </div>
+          <div class="state-section">
+            <label>Key Locations</label>
+            <ul id="locations-list" class="state-list"></ul>
+          </div>
+          <div class="state-section">
+            <label>Relationships</label>
+            <ul id="relationships-list" class="state-list"></ul>
+          </div>
+          <div class="state-section">
+            <label>Current Summary (TL;DR)</label>
+            <div id="summary-content" style="font-size: 0.8rem; color: #888; background: #080808; padding: 10px; border: 1px solid #1a1a1a;">No summary yet...</div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </body>
+</html>
