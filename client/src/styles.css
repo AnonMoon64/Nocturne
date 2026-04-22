@@ -344,24 +344,15 @@ textarea {
   background: transparent;
   border: none;
   color: #fff;
-  padding: 10px;
+  padding: 12px;
   resize: none;
-  min-height: 50px;
+  min-height: 25px;
+  max-height: 250px;
   outline: none;
   font-family: inherit;
-  font-size: 1.1rem;
+  font-size: 1.05rem;
+  line-height: 1.5;
 }
-
-button#send-btn {
-  background: #151515;
-  color: #888;
-  border: 1px solid #222;
-  padding: 0 35px;
-  cursor: pointer;
-  font-weight: bold;
-  text-transform: uppercase;
-}
-button#send-btn:hover { background: #1c1c1c; color: #fff; }
 
 /* Editor Panel */
 .editor-panel {

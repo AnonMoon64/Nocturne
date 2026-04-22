@@ -618,9 +618,85 @@ function saveCharacter() {
     char.scenario = editScenario.value;
     char.first_mes = editFirstMes.value;
     char.mes_example = editMesExample.value;
+    
     renderSidebar();
     renderChat();
     saveState();
+
+    // Visual Confirmation
+    const originalText = saveCharBtn.textContent;
+    saveCharBtn.textContent = "Saved!";
+    saveCharBtn.style.color = "#fb1";
+    setTimeout(() => {
+        saveCharBtn.textContent = originalText;
+        saveCharBtn.style.color = "";
+    }, 2000);
+}
+
+async function exportCharacter() {
+    if (editorIndex === -1) return;
+    const char = { ...characters[editorIndex] };
+    
+    // Clean up internal state for export (v2 spec context)
+    const exportData = {
+        name: char.name,
+        description: char.description,
+        personality: char.personality,
+        scenario: char.scenario,
+        first_mes: char.first_mes,
+        mes_example: char.mes_example,
+        metadata: { version: 1 }
+    };
+    
+    let avatarUrl = char.avatar;
+    
+    // If no avatar, generate a simple industrial placeholder
+    if (!avatarUrl) {
+        const canvas = document.createElement('canvas');
+        canvas.width = 400; canvas.height = 600;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#0a0a0a'; ctx.fillRect(0,0,400,600);
+        ctx.fillStyle = '#111'; ctx.fillRect(10,10,380,580);
+        ctx.fillStyle = '#333'; ctx.font = 'bold 40px Inter'; ctx.textAlign = 'center';
+        ctx.fillText(char.name.toUpperCase(), 200, 300);
+        avatarUrl = canvas.toDataURL('image/png');
+    }
+
+    try {
+        const pngBlob = await writePngMetadata(avatarUrl, exportData);
+        const fileName = `${char.name.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.png`;
+
+        if (isTauri) {
+            const arrayBuffer = await pngBlob.arrayBuffer();
+            const uint8 = new Uint8Array(arrayBuffer);
+            // Tauri File Save
+            const path = await window.__TAURI__.dialog.save({
+                defaultPath: fileName,
+                filters: [{ name: 'PNG', extensions: ['png'] }]
+            });
+            if (path) {
+                await window.__TAURI__.fs.writeBinaryFile(path, uint8);
+                alert("Character Card exported successfully.");
+            }
+        } else {
+            const url = URL.createObjectURL(pngBlob);
+            const a = document.createElement('a');
+            a.href = url; a.download = fileName; a.click();
+            URL.revokeObjectURL(url);
+        }
+    } catch (err) {
+        alert("Export failed: " + err.message);
+    }
+}
+
+function downloadFile(content, fileName) {
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 function openSettings() {
@@ -641,59 +717,76 @@ function saveAppSettings() {
 // --- API Logic ---
 
 async function sendMessage(isAutoTrigger = false) {
-    const text = isAutoTrigger ? "" : chatInputEl.value.trim();
-    if (!isAutoTrigger && (!text || !engineConnected)) return;
+    if (isAutoTrigger) {
+        let group = groups.find(g => g.id === activeGroupId);
+        if (!group) return;
 
-    if (!isAutoTrigger) {
-        if (abortController) abortController.abort();
-        abortController = new AbortController();
-        chatInputEl.value = "";
-        appendMessageUI("user", text, userPersona.name);
+        console.log(`[CYCLE-START] Iterative Auto-Generator active.`);
+        while (group.isAuto && !abortController.signal.aborted) {
+            const targetIndex = (activeIndices.length > 0) ? activeIndices[0] : activeIndex;
+            if (targetIndex === -1 || targetIndex === undefined) break;
+
+            console.log(`[PASS-THE-MIC] Turn for: ${characters[targetIndex].name}`);
+            
+            // Generate response for the single current target
+            try {
+                await generateResponseFor(targetIndex);
+                // Delay between turns for human-readability
+                await new Promise(r => setTimeout(r, 2000));
+            } catch (err) {
+                console.error("[CYCLE-ERROR] Turn failed, skipping...", err);
+                await new Promise(r => setTimeout(r, 1000));
+            }
+
+            // "Pass the Mic": Move the current speaker to the back of the line
+            if (group.isAuto && !abortController.signal.aborted) {
+                const currentSpeaker = activeIndices.shift();
+                activeIndices.push(currentSpeaker);
+                
+                // Persist the rotation state
+                group.members = [...activeIndices];
+                saveState();
+            }
+            
+            // Re-check group state before next iteration
+            group = groups.find(g => g.id === activeGroupId);
+        }
+        console.log(`[CYCLE-STOP] Auto-Generator loop terminated.`);
+        return;
     }
+
+    const text = chatInputEl.value.trim();
+    if (!text || !engineConnected) return;
+
+    if (abortController) abortController.abort();
+    abortController = new AbortController();
+    chatInputEl.value = "";
+    appendMessageUI("user", text, userPersona.name);
     
-    // DETERMINE TARGET: The current "Active Speaker" is always at the head of the list in a group.
+    // Manual Trigger target
     const targetIndex = (activeGroupId && activeIndices.length > 0) ? activeIndices[0] : activeIndex;
     if (targetIndex === -1 || targetIndex === undefined) return;
 
     // Add user message to history
-    if (!isAutoTrigger) {
-        // Identity Guard: Push using the specific profile name
-        const msgName = userPersona.name || "User";
-        if (activeGroupId && groupMode) {
-            const group = groups.find(g => g.id === activeGroupId);
-            if (group) group.history.push({ role: "user", content: text, name: msgName });
-        } else {
-            const char = characters[activeIndex];
-            if (char) char.history.push({ role: "user", content: text, name: msgName });
-        }
+    const msgName = userPersona.name || "User";
+    if (activeGroupId && groupMode) {
+        const group = groups.find(g => g.id === activeGroupId);
+        if (group) group.history.push({ role: "user", content: text, name: msgName });
+    } else {
+        const char = characters[activeIndex];
+        if (char) char.history.push({ role: "user", content: text, name: msgName });
     }
 
-    // Auto-Cycle Delay
-    if (isAutoTrigger) {
-        console.log(`[PASS-THE-MIC] Rotating from speaker at index ${targetIndex}. Next turn...`);
-        await new Promise(r => setTimeout(r, 2000));
-    }
-
-    // Generate response for the single current target
+    // Generate response for target
     if (!abortController.signal.aborted) {
         await generateResponseFor(targetIndex, text);
     }
 
-    // POST-GENERATION: Handle rotation and AUTO recursion
+    // After manual send, if AUTO is on, kick off the loop
     if (activeGroupId && !abortController.signal.aborted) {
         const group = groups.find(g => g.id === activeGroupId);
         if (group && group.isAuto && activeIndices.length > 1) {
-            console.log(`[MIC-PASS] Handoff confirmed. Characters remaining in lineup: ${activeIndices.length}`);
-            
-            // "Pass the Mic": Move the current speaker to the back of the line
-            const currentSpeaker = activeIndices.shift();
-            activeIndices.push(currentSpeaker);
-            
-            // Persist the rotation state
-            group.members = [...activeIndices];
-            saveState();
-            
-            // RECURSIVE CALL: The loop continues
+            // Start the iterative loop WITHOUT double-passing the mic here
             sendMessage(true); 
         }
     }
@@ -732,38 +825,65 @@ async function generateResponseFor(charIndex, latestInput) {
 
     const memoriesStr = MemoryEngine.injectRelevantMemories(active, latestInput);
 
+    const systemContent = [
+        `### SYSTEM INSTRUCTIONS:`,
+        appSettings.system_prompt || '',
+        `[IDENTITY]: You are ${char.name}.`,
+        char.description || '',
+        char.personality ? `[PERSONALITY]: ${char.personality}` : '',
+        char.scenario ? `[SCENARIO]: ${char.scenario}` : '',
+        worldStateStr,
+        memoriesStr,
+    ];
+
+    // ADAPTIVE PERSONA PROTOCOL: Determine if this character is a "Technical Builder" 
+    const techKeywords = ['tech', 'code', 'logic', 'hacker', 'dev', 'architect', 'program', 'analyt', 'scienti', 'math', 'theory', 'engineer', 'calculat', 'simulation'];
+    const charContent = (char.description + " " + (char.personality || "")).toLowerCase();
+    const isTechnical = techKeywords.some(kw => charContent.includes(kw));
+
+    if (isTechnical) {
+        systemContent.push(
+            `### RESPONSE PROTOCOL (TECHNICAL):`,
+            `1. FORMAT: <thought>Your internal reasoning</thought> Your spoken dialogue.`,
+            `2. TECHNICAL RIGOR: If discussing algorithms, architecture, or code, YOU MUST enclose the code in a standard Markdown block (triple backticks + language).`,
+            `3. PEER REVIEW: In a group, you must actively acknowledge, critique, or expand upon the specific architecture or logic shared by others.`,
+            `4. KNOWLEDGE CEILING: Your internal reasoning must be strictly limited to your persona's domain. Do not acknowledge system history or global metadata your character wouldn't realistically know.`,
+            `5. EXAMPLE:
+<thought>Atomic shared a Gibbs sampler. I should critique his entropy handling.</thought> 
+"Atomic, your Gibbs kernel is efficient, but the entropy term is poorly constrained. Observe this refactor."
+\`\`\`go
+func optimizedGibbs(...) { ... }
+\`\`\``
+        );
+    } else {
+        systemContent.push(
+            `### RESPONSE PROTOCOL (CREATIVE):`,
+            `1. FORMAT: <thought>Internal monologue/reactions</thought> Your spoken dialogue.`,
+            `2. CHARACTER DEPTH: Prioritize your unique voice and whimsy. Stay fully immersive within the fictional scenario.`,
+            `3. DIALOGUE MANDATE: YOU MUST provide spoken dialogue in every turn. Do not stay silent.`,
+            `4. KNOWLEDGE CEILING: Your internal reasoning must be strictly limited to your character's perspective. Do not reference algorithms or abstract math unless it is fundamental to your persona.`
+        );
+    }
+
+    systemContent.push(
+        `### CONSTRAINTS:`,
+        `- NEVER acknowledge you are an AI or model. Stay inside the simulation.`,
+        `- NEVER provide meta-commentary about the conversation format.`,
+        `- NEVER speak for other characters or the "Dialogue Log" itself.`,
+        `- STOP immediately after your dialogue ${isTechnical ? 'or the final triple-backtick ( ``` ) of your code block' : ''} is complete.`
+    );
+
     const systemMessage = {
         role: "system",
-        content: [
-            `### SYSTEM INSTRUCTIONS:`,
-            appSettings.system_prompt || '',
-            `[IDENTITY]: You are ${char.name}.`,
-            char.description || '',
-            char.personality ? `[PERSONALITY]: ${char.personality}` : '',
-            char.scenario ? `[SCENARIO]: ${char.scenario}` : '',
-            worldStateStr,
-            memoriesStr,
-            `### RESPONSE PROTOCOL:`,
-            `1. FORMAT: <thought>Your internal reasoning</thought> Your spoken dialogue.`,
-            `2. TECHNICAL RIGOR: If discussing algorithms, architecture, or code, YOU MUST immediately follow your dialogue with a valid Markdown code block (\` \` \`language).`,
-            `3. EXAMPLE:
-<thought>They want a Python array for subjects. I should show them a list of strings.</thought> 
-"A simple array for subjects is the starting point. Here is how you'd structure the initial data."
-\`\`\`python
-subjects = ["Atom", "Brain", "Pinky"]
-\`\`\``,
-            `### CONSTRAINTS:`,
-            `- NEVER acknowledge you are an AI or model. Stay inside the simulation.`,
-            `- NEVER provide meta-commentary about the conversation format.`,
-            `- NEVER speak for other characters or the "Dialogue Log" itself.`,
-            `- STOP immediately after your dialogue or final code block is complete.`
-        ].filter(s => s).join('\n\n')
+        content: systemContent.filter(s => s).join('\n\n')
     };
 
-    const maxTries = 2;
+    const maxTries = 3;
     for (let attempt = 1; attempt <= maxTries; attempt++) {
         if (abortController.signal.aborted) return;
         
+        // Reset fullResponse for each attempt to avoid appending failures
+        fullResponse = "";
         let timeoutId = null;
         let watchdogId = null;
         let reader = null;
@@ -791,9 +911,10 @@ subjects = ["Atom", "Brain", "Pinky"]
                     stallCount = 0;
                 } else {
                     stallCount++;
-                    // Update UI with active timer
+                    // Update UI with active timer and attempt count
                     if (fullResponse.length === 0) {
-                        fullResponseContentEl.innerHTML = `<span class="typing-indicator">Thinking... (${secondsWaiting}s)</span>`;
+                        const attemptStr = attempt > 1 ? `[Attempt ${attempt}/3] ` : '';
+                        fullResponseContentEl.innerHTML = `<span class="typing-indicator">${attemptStr}Thinking... (${secondsWaiting}s)</span>`;
                     }
                     
                     if (stallCount >= 30) {
@@ -820,7 +941,8 @@ subjects = ["Atom", "Brain", "Pinky"]
                     return `${speakerName}: ${dialogueOnly}`;
                 }).join('\n');
             
-            const prompt = `### DIALOGUE LOG:\n${script}\n\n### NEXT RESPONSE:\n${char.name}:\n<thought>`;
+            const nudge = attempt > 1 ? `\n(NOTE: ${char.name}, your previous turn was silent. YOU MUST provide spoken dialogue now! Internal thoughts are insufficient.)` : '';
+            const prompt = `### SHARED TECHNICAL TRANSCRIPT:\n${script}\n\n### NEXT RESPONSE:\n${char.name}:\n<thought>${nudge}`;
 
             const apiMessages = [
                 systemMessage, 
@@ -840,6 +962,9 @@ subjects = ["Atom", "Brain", "Pinky"]
 
             activeIndices.forEach(idx => {
                 const name = characters[idx].name;
+                // STALL PREVENTION: Do not stop on the current speaker's own name prefix
+                if (name === char.name) return;
+                
                 stopTokens.push(`${name}:`, `\n${name}:`, `[${name}]:`, `\n[${name}]:`, `${name} Reasoning:`, `\n${name} Reasoning:`);
             });
 
@@ -892,11 +1017,19 @@ subjects = ["Atom", "Brain", "Pinky"]
                                 function stripPrefixes(input) {
                                     let s = input.trim();
                                     let changed = true;
+                                    const metaHallucinations = ["thought...", "/thought", "reasoning...", "thinking...", "dialogue log", "markdown code blocks"];
+                                    
                                     while (changed) {
                                         changed = false;
                                         for (const p of namePrefixes) {
                                             if (s.toLowerCase().startsWith(p)) {
                                                 s = s.substring(p.length).trim();
+                                                changed = true;
+                                            }
+                                        }
+                                        for (const m of metaHallucinations) {
+                                            if (s.toLowerCase().startsWith(m)) {
+                                                s = s.substring(m.length).trim();
                                                 changed = true;
                                             }
                                         }
@@ -967,32 +1100,23 @@ subjects = ["Atom", "Brain", "Pinky"]
             if (timeoutId) clearTimeout(timeoutId);
             if (watchdogId) clearInterval(watchdogId);
 
-            // Final Status Check: If response is empty, provide a clean indicator
-            if (!fullResponse || fullResponse.trim().length === 0) {
-                fullResponse = ""; // Ensure it's clean
-                fullResponseContentEl.innerHTML = `<span style="color: #666; font-style: italic; font-size: 0.9rem;">(Character remains silent)</span>`;
-            } else {
-                fullResponseContentEl.innerHTML = formatContent(fullResponse, char.name, userPersona.name, false);
+            // FINAL VERIFICATION: Is there actual dialogue?
+            const dialogueOnly = fullResponse.replace(/<thought>[\s\S]*?<\/thought>/gi, "").trim();
+            
+            if (dialogueOnly.length === 0) {
+                console.warn(`[WATCHDOG] ${char.name} provided only thoughts. Forcing retry.`);
+                fullResponse = ""; // Discard and try again
+                throw new Error("No spoken dialogue provided.");
             }
+
+            fullResponseContentEl.innerHTML = formatContent(fullResponse, char.name, userPersona.name, false);
 
             // Persistence: Push to the correct history sink exactly once
-            // We use the cleaned/finalized content to avoid "Dirty History" from hallucinated tokens
+            // GUARD: Do NOT push if the generation was aborted halfway
+            if (abortController.signal.aborted) return;
+
             const finalSavedContent = fullResponse.trim();
             
-            // Dialogue Presence Check
-            const thoughtEndIndex = finalSavedContent.lastIndexOf("</thought>");
-            if (thoughtEndIndex !== -1) {
-                const dialogue = finalSavedContent.substring(thoughtEndIndex + 10).trim();
-                const hasCode = dialogue.includes("```");
-                const hasDialogue = dialogue.length > 5;
-
-                if (!hasCode && !hasDialogue && attempt < maxTries) {
-                    console.warn(`[WATCHDOG] Turn produced no dialogue/code. Retrying turn...`);
-                    fullResponse = "";
-                    continue; 
-                }
-            }
-
             if (activeGroupId) {
                 const group = groups.find(g => g.id === activeGroupId);
                 if (group) {
@@ -1064,6 +1188,54 @@ subjects = ["Atom", "Brain", "Pinky"]
 
 // --- PNG Card Parser (V1/V2) ---
 
+// --- PNG Metadata Processing (SillyTavern v2 compatible) ---
+
+function crc32(buf) {
+    let c = 0xFFFFFFFF;
+    if (!window._crcTable) {
+        window._crcTable = [];
+        for (let n = 0; n < 256; n++) {
+            let k = n;
+            for (let i = 0; i < 8; i++) k = (k & 1) ? (0xEDB88320 ^ (k >>> 1)) : (k >>> 1);
+            window._crcTable[n] = k;
+        }
+    }
+    for (let i = 0; i < buf.length; i++) c = window._crcTable[(c ^ buf[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+async function writePngMetadata(dataUrl, json) {
+    const response = await fetch(dataUrl);
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    
+    // Prefix: chara\0
+    const keyword = "chara\0";
+    // Unicode-safe Base64 encoding
+    const jsonStr = JSON.stringify({ data: json });
+    const utf8Bytes = new TextEncoder().encode(jsonStr);
+    let binStr = "";
+    for (let i = 0; i < utf8Bytes.length; i++) binStr += String.fromCharCode(utf8Bytes[i]);
+    const content = btoa(binStr);
+    const textData = new TextEncoder().encode(keyword + content);
+    
+    const chunk = new Uint8Array(4 + 4 + textData.length + 4);
+    const view = new DataView(chunk.buffer);
+    
+    view.setUint32(0, textData.length); // Length
+    chunk.set(new TextEncoder().encode("tEXt"), 4); // Type
+    chunk.set(textData, 8); // Data
+    view.setUint32(8 + textData.length, crc32(chunk.slice(4, 8 + textData.length))); // CRC
+    
+    // Insert after IHDR (PNG Signature 8 bytes + IHDR 25 bytes)
+    const newPng = new Uint8Array(bytes.length + chunk.length);
+    newPng.set(bytes.slice(0, 33), 0);
+    newPng.set(chunk, 33);
+    newPng.set(bytes.slice(33), 33 + chunk.length);
+    
+    return new Blob([newPng], { type: 'image/png' });
+}
+
 async function parsePngMetadata(file) {
     const arrayBuffer = await file.arrayBuffer();
     const dataView = new DataView(arrayBuffer);
@@ -1103,15 +1275,14 @@ async function parsePngMetadata(file) {
                             tl_dr: "",
                             thoughts: ""
                         }
-                    },
-                    avatar: blobUrl
+                    }
                 };
             }
         }
         offset += 12 + length;
         if (type === 'IEND') break;
     }
-    return { name: file.name.replace('.png', ''), avatar: blobUrl };
+    return { name: file.name.replace('.png', ''), description: "", personality: "", scenario: "", first_mes: "", mes_example: "" };
 }
 
 async function autoPoll(once = false) {
@@ -1133,10 +1304,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     await autoPoll(true);
     
     setInterval(autoPoll, 3000);
-    sendBtn.addEventListener("click", sendMessage);
     chatInputEl.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
     connectBtn.addEventListener("click", toggleEngine);
     saveCharBtn.addEventListener("click", saveCharacter);
+    document.querySelector("#export-char-btn").addEventListener("click", exportCharacter);
     closeEditorBtn.addEventListener("click", () => editorPanel.classList.remove("open"));
     document.querySelector("#import-btn").addEventListener("click", importCard);
     document.querySelector("#user-btn").addEventListener("click", openSettings);
@@ -1256,28 +1427,60 @@ async function importUserPic() {
 
 async function importCard() {
     const input = document.createElement('input');
-    input.type = 'file'; input.accept = '.png';
+    input.type = 'file'; 
+    input.accept = '.png,.json';
     input.onchange = async (e) => {
         const file = e.target.files[0];
+        if (!file) return;
+        
         try {
-            const charData = await parsePngMetadata(file);
+            let charData;
+            if (file.name.endsWith('.json')) {
+                const text = await file.text();
+                charData = JSON.parse(text);
+            } else {
+                charData = await parsePngMetadata(file);
+            }
             
-            // Convert blob URL to Base64 for persistence
+            // Conflict Resolution
+            const existingIndex = characters.findIndex(c => c.name.toLowerCase() === charData.name.toLowerCase());
+            let targetIndex = -1;
+
+            if (existingIndex !== -1 && existingIndex !== 0) { // Don't allow updating System
+                const choice = confirm(`Character "${charData.name}" already exists. \n\nClick OK to UPDATE (Keep History) \nClick Cancel to CREATE NEW (Duplicate)`);
+                if (choice) targetIndex = existingIndex;
+            }
+
             const reader = new FileReader();
             reader.onload = (ev) => {
+                const avatarData = (file.name.endsWith('.json') && charData.avatar) ? charData.avatar : ev.target.result;
+                
                 const newChar = { 
                     ...charData, 
-                    avatar: ev.target.result,
-                    id: Date.now().toString(), 
-                    history: charData.first_mes ? [{ role: "assistant", content: charData.first_mes }] : [] 
+                    avatar: avatarData,
+                    id: targetIndex !== -1 ? characters[targetIndex].id : Date.now().toString(), 
+                    history: targetIndex !== -1 ? characters[targetIndex].history : (charData.first_mes ? [{ role: "assistant", content: charData.first_mes }] : [])
                 };
-                characters.push(newChar);
-                selectCharacter(characters.length - 1);
-                openEditor(characters.length - 1);
+
+                if (targetIndex !== -1) {
+                    characters[targetIndex] = newChar;
+                    selectCharacter(targetIndex);
+                } else {
+                    characters.push(newChar);
+                    selectCharacter(characters.length - 1);
+                }
+                
+                openEditor(targetIndex !== -1 ? targetIndex : characters.length - 1);
                 saveState();
             };
-            reader.readAsDataURL(file);
-        } catch (err) { alert("Failed: " + err); }
+            
+            if (file.name.endsWith('.json')) {
+                const dummyEvent = { target: { result: charData.avatar || null } };
+                reader.onload(dummyEvent);
+            } else {
+                reader.readAsDataURL(file);
+            }
+        } catch (err) { alert("Import Failed: " + err.message); }
     };
     input.click();
 }
